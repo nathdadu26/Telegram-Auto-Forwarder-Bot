@@ -1,6 +1,7 @@
 from telethon import events
 
 from .. import database as db
+from ..queue import resume_event
 from ..utils import admin_only
 
 
@@ -26,6 +27,8 @@ def register(bot, userbot):
             "**Commands:**\n"
             "/start - Show this message\n"
             "/all_channels - List all channels with file counts\n"
+            "/pause - Pause all copying (queued and in-progress)\n"
+            "/resume - Resume after a pause\n"
         )
         await event.reply(text)
 
@@ -41,3 +44,18 @@ def register(bot, userbot):
             tag = "📌 Main" if ch["type"] == "main" else "🎯 Target"
             lines.append(f"{tag} — {ch['title']} — {ch['file_count']} files")
         await event.reply("\n".join(lines))
+
+    @bot.on(events.NewMessage(pattern="/pause"))
+    @admin_only
+    async def pause_handler(event):
+        resume_event.clear()
+        await event.reply(
+            "⏸️ Paused. The current file being copied will finish, then everything "
+            "(queued links and daily rescans) stops until /resume."
+        )
+
+    @bot.on(events.NewMessage(pattern="/resume"))
+    @admin_only
+    async def resume_handler(event):
+        resume_event.set()
+        await event.reply("▶️ Resumed.")
