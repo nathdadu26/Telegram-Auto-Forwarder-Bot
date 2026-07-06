@@ -22,6 +22,11 @@ async def main():
     user_me = await userbot.get_me()
     print(f"Bot: @{bot_me.username} | Userbot: {user_me.first_name} ({user_me.id})")
 
+    # The userbot's entity cache is empty on every fresh restart (it isn't
+    # persisted in SESSION_STRING). Without this, sending files to a target
+    # channel by its stored ID silently fails right after every redeploy.
+    await userbot.get_dialogs()
+
     register_all(bot, userbot)
 
     if config.MAIN_CHANNEL:
