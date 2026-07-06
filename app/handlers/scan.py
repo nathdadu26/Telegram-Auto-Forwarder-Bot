@@ -1,8 +1,10 @@
 import asyncio
+import traceback
 
 from telethon.errors import FloodWaitError
 
 from .. import config, database as db
+from ..queue import wait_if_paused
 from ..utils import LINK_RE, is_video, get_file_id, progress_bar, resolve_and_join, resolve_by_id
 
 
@@ -12,12 +14,15 @@ async def _copy_videos(userbot, status, entity, messages):
     edit with progress) may be None for silent/background runs."""
     total = len(messages)
     copied = 0
-    skipped = 0
+    duplicates = 0
+    errors = 0
 
     for i, message in enumerate(messages, start=1):
+        await wait_if_paused()
+
         file_id = get_file_id(message)
         if await db.is_duplicate(file_id, "target"):
-            skipped += 1
+            duplicates += 1
         else:
             target = await db.get_available_target_channel()
             if target is None:
@@ -27,27 +32,33 @@ async def _copy_videos(userbot, status, entity, messages):
                         f"Copied {copied}/{total} so far. Add a new target channel — "
                         f"I'll pick up the rest on the next run."
                     )
-                return copied, skipped
+                return copied, duplicates, errors
             try:
-                await userbot.send_file(target["_id"], file=message.media, caption="")
+                target_entity = await resolve_by_id(userbot, str(target["_id"]))
+                if target_entity is None:
+                    raise ValueError(f"Could not resolve target channel {target['_id']}")
+                await userbot.send_file(target_entity, file=message.media, caption="")
                 await db.save_file_record(file_id, entity.id, target["_id"], "target")
                 await db.increment_file_count(target["_id"])
                 copied += 1
             except FloodWaitError as e:
                 await asyncio.sleep(e.seconds)
             except Exception:
-                skipped += 1
+                errors += 1
+                print(f"Copy error (message {message.id} -> {target['_id']}):")
+                traceback.print_exc()
 
         if status and (i % 3 == 0 or i == total):
             bar = progress_bar(i, total)
             await status.edit(
-                f"**{entity.title}**\n{bar} {i}/{total}\nCopied: {copied} | Skipped: {skipped}"
+                f"**{entity.title}**\n{bar} {i}/{total}\n"
+                f"Copied: {copied} | Duplicate: {duplicates} | Errors: {errors}"
             )
 
         if i != total:
             await asyncio.sleep(config.COPY_DELAY_SECONDS)
 
-    return copied, skipped
+    return copied, duplicates, errors
 
 
 async def handle_channel_scan(bot, userbot, event):
@@ -78,10 +89,13 @@ async def handle_channel_scan(bot, userbot, event):
         return
 
     await status.edit(f"📦 Found **{total}** video files in **{entity.title}**.\nStarting copy...")
-    copied, skipped = await _copy_videos(userbot, status, entity, video_messages)
+    copied, duplicates, errors = await _copy_videos(userbot, status, entity, video_messages)
 
     await db.add_source(entity.id, entity.title, link, highest_id)
-    await status.edit(f"✅ Done. Copied {copied}/{total} videos from **{entity.title}**. Skipped: {skipped}.")
+    await status.edit(
+        f"✅ Done. Copied {copied}/{total} videos from **{entity.title}**.\n"
+        f"Duplicate: {duplicates} | Errors: {errors}"
+    )
 
 
 async def handle_rescan(bot, userbot, source):
@@ -120,8 +134,11 @@ async def handle_rescan(bot, userbot, source):
             status = None
 
     if video_messages:
-        copied, skipped = await _copy_videos(userbot, status, entity, video_messages)
+        copied, duplicates, errors = await _copy_videos(userbot, status, entity, video_messages)
         if status:
-            await status.edit(f"✅ Rescan done for **{entity.title}**. Copied {copied}, skipped {skipped}.")
+            await status.edit(
+                f"✅ Rescan done for **{entity.title}**. Copied {copied}, "
+                f"duplicate {duplicates}, errors {errors}."
+            )
 
     await db.update_last_message_id(channel_id, highest_id)
